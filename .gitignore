@@ -1,0 +1,41 @@
+# Python bytecode/cache
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Virtual environments
+.venv/
+venv/
+env/
+ENV/
+
+# Tool/test/cache directories
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+
+# IDE/editor settings
+.vscode/
+.idea/
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Local secrets/config
+.env
+.env.*
+*.secret
+
+# Project runtime/generated files
+data_log.txt
+data_log_backup.txt
+watcher_log.txt
+tracker_output.txt
+.checkpoint.tmp
+
+# If more runtime logs are created
+*.log
+*_log.txt
