@@ -1,36 +1,37 @@
 """
-USB Tethering Data Tracker v2.1
+USB Tethering Data Tracker v3.2
 ================================
-Tracks data usage per tethering session with timestamps.
-Appends each session to 'data_log.txt' in the same folder.
-
-Changelog v2.1:
-  - Each log line now shows cumulative daily total
-  - Fixed UnicodeEncodeError on Windows terminal (ASCII spinner)
+- Polls .shutdown flag for graceful save before hot-reload
+- Writes live_status.tmp every second for view_stats.py
+- Logs every session to data_log.txt on unplug/reload/exit
 """
 
 import psutil
 import time
 import os
 import re
+import sys
 from datetime import datetime
 
 # --- CONFIG ------------------------------------------------------------------
-LOG_FILE        = os.path.join(os.path.dirname(os.path.abspath(__file__)), "data_log.txt")
-POLL_INTERVAL   = 3
+BASE_DIR        = os.path.dirname(os.path.abspath(__file__))
+LOG_FILE        = os.path.join(BASE_DIR, "data_log.txt")
+LIVE_FILE       = os.path.join(BASE_DIR, "live_status.tmp")
+CHECKPOINT_FILE = os.path.join(BASE_DIR, ".checkpoint.tmp")
+SHUTDOWN_FLAG   = os.path.join(BASE_DIR, ".shutdown")
+POLL_INTERVAL   = 1
 CHECKPOINT_SECS = 60
 WAIT_TIMEOUT    = 5
 TETHER_KEYWORDS = ["rndis", "remote ndis", "android", "usb ethernet", "usb tether", "ethernet 4"]
-SPINNER         = ["|", "/", "-", "\\"]
 # -----------------------------------------------------------------------------
 
 
 def bytes_to_human(n):
     for unit in ["B", "KB", "MB", "GB", "TB"]:
         if n < 1024:
-            return "{:.2f} {}".format(n, unit)
+            return "{:.3f} {}".format(n, unit)
         n /= 1024
-    return "{:.2f} PB".format(n)
+    return "{:.3f} PB".format(n)
 
 
 def human_to_bytes(s):
@@ -45,38 +46,120 @@ def human_to_bytes(s):
     return 0
 
 
-def get_daily_bytes_so_far(date_str):
-    """
-    Sum all session totals already logged for date_str.
-    Handles all 3 log formats:
-      v1.0 -> Total: X  (no Session: label)
-      v2.0 -> Total: X  (with Down:/Up: labels)
-      v2.1 -> Session: X  Day Total: Y
-    """
-    if not os.path.exists(LOG_FILE):
-        return 0.0
+def shutdown_requested():
+    return os.path.exists(SHUTDOWN_FLAG)
 
+
+def clear_shutdown_flag():
+    try:
+        if os.path.exists(SHUTDOWN_FLAG):
+            os.remove(SHUTDOWN_FLAG)
+    except Exception:
+        pass
+
+
+def get_todays_logged_bytes():
+    """Sum only Session: values — never Day Total: — to avoid double counting."""
+    today = datetime.now().strftime("%Y-%m-%d")
     total = 0.0
-    prefix = r"^\[" + re.escape(date_str) + r"\]"
-
-    # v2.1 format: Session: X
-    pat_session = re.compile(prefix + r".*Session:\s*([\d\.]+\s*(?:TB|GB|MB|KB|B))")
-    # v1/v2.0 format: Total: X  (only count if no Session: present)
-    pat_total   = re.compile(prefix + r".*Total:\s*([\d\.]+\s*(?:TB|GB|MB|KB|B))")
-
+    if not os.path.exists(LOG_FILE):
+        return total
+    # Matches:  |  Session: 1.234 MB  |
+    pat = re.compile(
+        r"^\[" + re.escape(today) + r"\].*\|  Session:\s*([\d\.]+\s*(?:TB|GB|MB|KB|B))\s*\|"
+    )
     with open(LOG_FILE, "r", encoding="utf-8") as f:
         for line in f:
-            if not line.startswith("[" + date_str + "]"):
+            if not line.startswith("[" + today + "]"):
                 continue
-            m = pat_session.search(line)
-            if m:
-                total += human_to_bytes(m.group(1))
-                continue
-            # fallback: old format used Total: for session amount
-            m = pat_total.search(line)
+            m = pat.search(line)
             if m:
                 total += human_to_bytes(m.group(1))
     return total
+
+
+def log_session(iface, start_time, end_time, recv, sent, reason=""):
+    ts       = int((end_time - start_time).total_seconds())
+    h, rem   = divmod(ts, 3600)
+    m, s     = divmod(rem, 60)
+    dur      = "{}h {}m {}s".format(h, m, s) if h else "{}m {}s".format(m, s)
+    tag      = "  [{}]".format(reason) if reason else ""
+    date_str = start_time.strftime("%Y-%m-%d")
+    sess_b   = recv + sent
+
+    # Skip zero-data unless it's a reload (always log reloads)
+    if sess_b == 0 and reason != "reloaded":
+        return None
+
+    daily = get_todays_logged_bytes()
+    cumul = daily + sess_b
+
+    line = "[{}]  {} -> {}  |  Duration: {}  |  Down: {}  Up: {}  |  Session: {}  |  Day Total: {}{}\n".format(
+        date_str,
+        start_time.strftime("%I:%M:%S %p"),
+        end_time.strftime("%I:%M:%S %p"),
+        dur,
+        bytes_to_human(recv), bytes_to_human(sent),
+        bytes_to_human(sess_b),
+        bytes_to_human(cumul), tag
+    )
+
+    is_new = not os.path.exists(LOG_FILE)
+    with open(LOG_FILE, "a", encoding="utf-8") as f:
+        if is_new:
+            f.write("USB Tethering Data Usage Log\n")
+            f.write("=" * 130 + "\n")
+        f.write(line)
+    return line
+
+
+def write_live_status(iface, start_time, recv, sent, status="connected"):
+    elapsed    = (datetime.now() - start_time).total_seconds()
+    daily_prev = get_todays_logged_bytes()
+    try:
+        with open(LIVE_FILE, "w", encoding="utf-8") as f:
+            f.write("status={}\n".format(status))
+            f.write("iface={}\n".format(iface))
+            f.write("start={}\n".format(start_time.strftime("%I:%M:%S %p")))
+            f.write("elapsed={:.0f}\n".format(elapsed))
+            f.write("recv={}\n".format(recv))
+            f.write("sent={}\n".format(sent))
+            f.write("daily_prev={}\n".format(daily_prev))
+            f.write("updated={}\n".format(datetime.now().strftime("%Y-%m-%d %H:%M:%S")))
+    except Exception:
+        pass
+
+
+def clear_live_status(status="idle"):
+    try:
+        with open(LIVE_FILE, "w", encoding="utf-8") as f:
+            f.write("status={}\n".format(status))
+            f.write("updated={}\n".format(datetime.now().strftime("%Y-%m-%d %H:%M:%S")))
+    except Exception:
+        pass
+
+
+def checkpoint_session(iface, start_time, recv, sent):
+    ts     = int((datetime.now() - start_time).total_seconds())
+    h, rem = divmod(ts, 3600)
+    m, s   = divmod(rem, 60)
+    try:
+        with open(CHECKPOINT_FILE, "w", encoding="utf-8") as f:
+            f.write("[CHECKPOINT {}]  Started: {}  |  {}h {}m {}s  |  Session: {}\n".format(
+                datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                start_time.strftime("%I:%M:%S %p"),
+                h, m, s, bytes_to_human(recv + sent)
+            ))
+    except Exception:
+        pass
+
+
+def clear_checkpoint():
+    try:
+        if os.path.exists(CHECKPOINT_FILE):
+            os.remove(CHECKPOINT_FILE)
+    except Exception:
+        pass
 
 
 def find_tether_interface():
@@ -89,197 +172,102 @@ def find_tether_interface():
     return None
 
 
-def is_interface_alive(iface_name):
+def is_interface_alive(name):
     try:
-        stats = psutil.net_if_stats()
-        return iface_name in stats and stats[iface_name].isup
+        s = psutil.net_if_stats()
+        return name in s and s[name].isup
     except Exception:
         return False
 
 
-def get_interface_bytes(iface_name):
+def get_interface_bytes(name):
     try:
-        counters = psutil.net_io_counters(pernic=True)
-        if iface_name in counters:
-            c = counters[iface_name]
-            return c.bytes_recv, c.bytes_sent
+        c = psutil.net_io_counters(pernic=True)
+        if name in c:
+            return c[name].bytes_recv, c[name].bytes_sent
     except Exception:
         pass
     return 0, 0
 
 
-def log_session(iface, start_time, end_time, recv, sent, reason=""):
-    total_secs   = int((end_time - start_time).total_seconds())
-    h, rem       = divmod(total_secs, 3600)
-    m, s         = divmod(rem, 60)
-    dur          = "{}h {}m {}s".format(h, m, s) if h else "{}m {}s".format(m, s)
-    tag          = "  [{}]".format(reason) if reason else ""
-    date_str     = start_time.strftime("%Y-%m-%d")
-    sess_total   = recv + sent
-    cumulative   = get_daily_bytes_so_far(date_str) + sess_total
-
-    line = "[{}]  {} -> {}  |  Duration: {}  |  Down: {}  Up: {}  |  Session: {}  |  Day Total: {}{}\n".format(
-        date_str,
-        start_time.strftime("%I:%M:%S %p"),
-        end_time.strftime("%I:%M:%S %p"),
-        dur,
-        bytes_to_human(recv),
-        bytes_to_human(sent),
-        bytes_to_human(sess_total),
-        bytes_to_human(cumulative),
-        tag
-    )
-
-    is_new = not os.path.exists(LOG_FILE)
-    with open(LOG_FILE, "a", encoding="utf-8") as f:
-        if is_new:
-            f.write("USB Tethering Data Usage Log\n")
-            f.write("=" * 130 + "\n")
-        f.write(line)
-    return line
-
-
-def checkpoint_session(iface, start_time, recv, sent):
-    cp  = os.path.join(os.path.dirname(LOG_FILE), ".checkpoint.tmp")
-    now = datetime.now()
-    ts  = int((now - start_time).total_seconds())
-    h, rem = divmod(ts, 3600)
-    m, s   = divmod(rem, 60)
-    with open(cp, "w", encoding="utf-8") as f:
-        f.write("[CHECKPOINT {}]  Started: {}  |  Running: {}h {}m {}s  |  Session: {}\n".format(
-            now.strftime("%Y-%m-%d %H:%M:%S"),
-            start_time.strftime("%I:%M:%S %p"),
-            h, m, s,
-            bytes_to_human(recv + sent)
-        ))
-
-
-def clear_checkpoint():
-    cp = os.path.join(os.path.dirname(LOG_FILE), ".checkpoint.tmp")
-    if os.path.exists(cp):
-        os.remove(cp)
-
-
-def wait_for_reconnect(session_count):
-    print("\n" + "-" * 60)
-    print("  Session #{} saved. Phone unplugged.".format(session_count))
-    print("  Waiting for reconnect... (Ctrl+C to exit)\n")
-    i = 0
-    while True:
-        iface = find_tether_interface()
-        if iface:
-            return iface
-        print("\r  {}  Waiting for USB tethering...   ".format(SPINNER[i % 4]), end="", flush=True)
-        i += 1
-        time.sleep(WAIT_TIMEOUT)
-
-
-def run_session(iface, num):
-    print("\n" + "-" * 60)
-    print("  Session #{}  |  Interface: {}".format(num, iface))
-    print("  Log: {}".format(LOG_FILE))
-    print("  Unplug = auto-save  |  Ctrl+C = save and exit\n")
-
-    start                        = datetime.now()
-    baseline_recv, baseline_sent = get_interface_bytes(iface)
-    prev_recv,     prev_sent     = baseline_recv, baseline_sent
-    s_recv,        s_sent        = 0, 0
-    last_cp                      = time.time()
+def run_session(iface, session_num):
+    start          = datetime.now()
+    b_recv, b_sent = get_interface_bytes(iface)
+    p_recv, p_sent = b_recv, b_sent
+    s_recv, s_sent = 0, 0
+    last_cp        = time.time()
 
     try:
         while True:
             time.sleep(POLL_INTERVAL)
 
+            # Graceful shutdown requested by watcher (hot-reload)
+            if shutdown_requested():
+                clear_shutdown_flag()
+                end = datetime.now()
+                log_session(iface, start, end, s_recv, s_sent, reason="reloaded")
+                clear_checkpoint()
+                clear_live_status("idle")
+                sys.exit(0)
+
             # Phone unplugged
             if not is_interface_alive(iface):
-                end    = datetime.now()
-                logged = log_session(iface, start, end, s_recv, s_sent, reason="unplugged")
+                end = datetime.now()
+                log_session(iface, start, end, s_recv, s_sent, reason="unplugged")
                 clear_checkpoint()
-                print("\n\n  [UNPLUG] Session #{} saved:".format(num))
-                print("  " + logged.strip())
+                clear_live_status("waiting")
                 return "unplugged"
 
             c_recv, c_sent = get_interface_bytes(iface)
+            if c_recv < p_recv or c_sent < p_sent:
+                b_recv = c_recv - s_recv
+                b_sent = c_sent - s_sent
 
-            # Counter reset guard
-            if c_recv < prev_recv or c_sent < prev_sent:
-                baseline_recv = c_recv - s_recv
-                baseline_sent = c_sent - s_sent
+            s_recv = c_recv - b_recv
+            s_sent = c_sent - b_sent
 
-            s_recv = c_recv - baseline_recv
-            s_sent = c_sent - baseline_sent
-
-            # 60s checkpoint
             if time.time() - last_cp >= CHECKPOINT_SECS:
                 checkpoint_session(iface, start, s_recv, s_sent)
                 last_cp = time.time()
 
-            # Live display
-            el     = int((datetime.now() - start).total_seconds())
-            h, rem = divmod(el, 3600)
-            m, s   = divmod(rem, 60)
-            tstr   = "{}h {:02d}m {:02d}s".format(h, m, s) if h else "{:02d}m {:02d}s".format(m, s)
-
-            print(
-                "\r  {}  |  Down: {}  Up: {}  |  Session: {}   ".format(
-                    tstr,
-                    bytes_to_human(s_recv),
-                    bytes_to_human(s_sent),
-                    bytes_to_human(s_recv + s_sent)
-                ),
-                end="", flush=True
-            )
-            prev_recv, prev_sent = c_recv, c_sent
+            write_live_status(iface, start, s_recv, s_sent)
+            p_recv, p_sent = c_recv, c_sent
 
     except KeyboardInterrupt:
-        end    = datetime.now()
-        logged = log_session(iface, start, end, s_recv, s_sent, reason="manual exit")
+        end = datetime.now()
+        log_session(iface, start, end, s_recv, s_sent, reason="manual exit")
         clear_checkpoint()
-        print("\n\n  [STOPPED] Session #{} saved:".format(num))
-        print("  " + logged.strip())
-        print("\n  Full log -> {}".format(LOG_FILE))
+        clear_live_status("idle")
         return "manual_exit"
 
 
 def main():
-    print("=" * 60)
-    print("  USB Tethering Data Tracker  v2.1")
-    print("=" * 60)
-    print("  Each log line shows cumulative daily total")
-    print("  Unplug/replug freely  |  Ctrl+C to exit")
-    print("=" * 60)
+    clear_shutdown_flag()
+    clear_live_status("waiting")
 
     iface = find_tether_interface()
-
     if not iface:
-        print("\n  Phone not detected. Plug in USB tethering...\n")
-        i = 0
-        try:
-            while not iface:
-                print("\r  {}  Waiting...   ".format(SPINNER[i % 4]), end="", flush=True)
-                time.sleep(WAIT_TIMEOUT)
-                iface = find_tether_interface()
-                i += 1
-        except KeyboardInterrupt:
-            print("\n\n  Exiting. No sessions recorded.")
-            return
+        while not iface:
+            if shutdown_requested():
+                clear_shutdown_flag()
+                sys.exit(0)
+            time.sleep(WAIT_TIMEOUT)
+            iface = find_tether_interface()
 
     n = 0
     while True:
         n += 1
         result = run_session(iface, n)
-
         if result == "manual_exit":
-            print("\n  Sessions this run: {}  |  Goodbye!".format(n))
             break
-
-        try:
-            iface = wait_for_reconnect(n)
-            print("\r  Reconnected! Starting session #{}...   ".format(n + 1))
-            time.sleep(1)
-        except KeyboardInterrupt:
-            print("\n\n  Exiting. Sessions this run: {}  |  Goodbye!".format(n))
-            break
+        clear_live_status("waiting")
+        iface = None
+        while not iface:
+            if shutdown_requested():
+                clear_shutdown_flag()
+                sys.exit(0)
+            time.sleep(WAIT_TIMEOUT)
+            iface = find_tether_interface()
 
 
 if __name__ == "__main__":

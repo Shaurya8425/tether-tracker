@@ -2,84 +2,93 @@
 
 Track USB tethering data usage per session and keep a running daily total.
 
-## What this project does
+## Overview
 
-- Detects your USB tethering network interface
+- Detects your USB tethering network interface automatically
 - Tracks download/upload bytes for each session
-- Auto-saves when phone is unplugged
-- Supports reconnect and starts a new session automatically
-- Writes usage history to `data_log.txt`
+- Auto-saves when phone is unplugged, auto-reconnects on replug
+- Live dashboard to view current stats in real-time
+- Logs usage history to `data_log.txt`
 
-## Files you should know
+## Core Components
 
-- `track_tethering_v2.py` → main tracker (records sessions)
-- `watcher.py` → keeps tracker running and auto-restarts on crash/file changes
-- `install.bat` → one-click setup (Task Scheduler auto-start on login)
-- `uninstall.bat` → removes scheduled auto-start task
-- `migrate_log.py` → one-time migration for old log format
+| File                    | Purpose                                                                     |
+| ----------------------- | --------------------------------------------------------------------------- |
+| `track_tethering_v2.py` | Main tracker (records sessions, updates live status)                        |
+| `watcher.py`            | Supervisor (keeps tracker running, auto-restarts, watches for code changes) |
+| `view_stats.py`         | Live dashboard (view current stats anytime)                                 |
+| `install.bat`           | One-click setup (auto-start on Windows login)                               |
+| `uninstall.bat`         | Removes auto-start task                                                     |
 
 ## Requirements
 
-- Windows
+- Windows 10/11
 - Python 3 (available in PATH as `python`)
-- Internet once for first install (`psutil` is installed by `install.bat`)
+- Internet (first install only, to download `psutil`)
 
-## Quick start (recommended)
+## Installation & Auto-Start
 
-1. Open Command Prompt **as Administrator**.
-2. Go to this project folder:
-   ```bat
+1. Open **Command Prompt as Administrator**
+2. Navigate to project folder:
+   ```batch
    cd /d C:\Users\amany\tether-tracker
    ```
 3. Run installer:
-   ```bat
+   ```batch
    install.bat
    ```
-4. Done. Tracker is now configured to start at every Windows login.
+4. Done! Tracker starts automatically at every Windows login.
 
-## Start manually (without installer)
+## Manual Start (without auto-start)
 
-From project folder, run:
-
-```bat
+```batch
 python watcher.py
 ```
 
-This starts the tracker and writes:
+Generates:
 
-- watcher events to `watcher_log.txt`
-- tracker console output to `tracker_output.txt`
-- usage records to `data_log.txt`
+- `watcher_log.txt` — watcher events
+- `tracker_output.txt` — tracker console output
+- `data_log.txt` — usage history
+- `live_status.tmp` — live stats (deleted on exit)
 
-## Migrate old logs (only if needed)
+## Live Dashboard
 
-If your old `data_log.txt` was created by an older tracker version:
+While tracker is running, view real-time stats anytime:
 
-```bat
-python migrate_log.py
+```batch
+python view_stats.py
 ```
 
-- Creates backup: `data_log_backup.txt`
-- Rewrites entries to include `Session:` and `Day Total:` fields
+Press `Ctrl + C` to close. **Background tracker keeps running.**
 
-## Uninstall auto-start
+## How It Works
 
-Run:
+1. **Watcher** starts and launches **Tracker**
+2. **Tracker** detects USB tether interface and polls every 1 second
+3. When connected: logs each session on-demand; updates `live_status.tmp` every second for the dashboard
+4. When unplugged: auto-saves session and waits for reconnect
+5. **Watcher** auto-reloads if you edit `track_tethering_v2.py` (saves current session first)
 
-```bat
+## Uninstall
+
+```batch
 uninstall.bat
 ```
 
-This removes the scheduled task but keeps your `data_log.txt`.
+Removes auto-start task. Your `data_log.txt` is kept.
 
-## Notes
+## Tips
 
-- Use USB tethering from your phone and keep it enabled.
-- Unplugging phone auto-saves the current session.
-- Press `Ctrl + C` in manual mode to save and exit.
+- USB tethering must be enabled on your phone
+- Unplugging auto-saves the current session
+- Press `Ctrl + C` in manual mode to save and exit gracefully
+- Edit `track_tethering_v2.py` anytime—watcher auto-reloads without losing data
 
 ## Troubleshooting
 
-- **`python` not found**: install Python 3 and enable “Add Python to PATH”.
-- **No data tracked**: verify USB tethering is ON and Windows detects the adapter.
-- **No auto-start after login**: re-run `install.bat` as Administrator.
+| Problem                   | Solution                                                   |
+| ------------------------- | ---------------------------------------------------------- |
+| `python` not found        | Install Python 3 and enable "Add Python to PATH"           |
+| No data being tracked     | Verify USB tethering is ON and Windows detects the adapter |
+| No auto-start after login | Run `install.bat` as Administrator again                   |
