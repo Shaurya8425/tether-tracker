@@ -1,8 +1,8 @@
 status=connected
-iface=Ethernet 4
-start=09:35:24 PM
-elapsed=1399
-recv=67768059
-sent=15071819
-daily_prev=1118222863.032
-updated=2026-03-04 21:58:43
+iface=Ethernet 5
+start=11:41:59 PM
+elapsed=1423
+recv=730110634
+sent=13932553
+daily_prev=0.0
+updated=2026-03-06 00:05:42

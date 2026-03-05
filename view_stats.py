@@ -18,7 +18,6 @@ LOG_FILE  = os.path.join(BASE_DIR, "data_log.txt")
 LIVE_FILE = os.path.join(BASE_DIR, "live_status.tmp")
 REFRESH   = 1
 
-CLEAR  = "\033[2J\033[H"
 BOLD   = "\033[1m"
 DIM    = "\033[2m"
 GREEN  = "\033[92m"
@@ -78,7 +77,6 @@ def get_todays_sessions():
     if not os.path.exists(LOG_FILE):
         return sessions, daily_b
 
-    # Parse all log line fields
     pat = re.compile(
         r"^\[" + re.escape(today) + r"\]\s+(.+?)\s+->\s+(.+?)\s+\|"
         r".*?Duration:\s*([^\|]+)\|"
@@ -86,7 +84,7 @@ def get_todays_sessions():
         r"\s+Up:\s*([\d\.]+\s*(?:TB|GB|MB|KB|B))"
         r".*?\|  Session:\s*([\d\.]+\s*(?:TB|GB|MB|KB|B))\s*\|"
     )
-    pat_reason = re.compile(r"\[(unplugged|manual exit|reloaded)\]")
+    pat_reason = re.compile(r"\[(unplugged|manual exit|reloaded|midnight split)\]")
 
     with open(LOG_FILE, "r", encoding="utf-8") as f:
         for line in f:
@@ -119,6 +117,8 @@ def format_elapsed(seconds):
 
 
 def draw(sessions, daily_so_far, live):
+    os.system("cls")
+
     status    = live.get("status", "unknown")
     iface     = live.get("iface", "—")
     updated   = live.get("updated", "—")
@@ -128,14 +128,13 @@ def draw(sessions, daily_so_far, live):
     live_tot  = live_recv + live_sent
     grand     = daily_so_far + live_tot
 
-    out = [CLEAR]
+    out = []
     out.append(BOLD + CYAN + "  USB Tethering — Live Stats" + RESET +
                DIM + "  (read-only, Ctrl+C to close)" + RESET)
     out.append("  " + DIM + "Now: {}  |  Tracker update: {}".format(
         datetime.now().strftime("%I:%M:%S %p"), updated) + RESET)
     out.append("  " + LINE)
 
-    # Today's logged sessions
     if sessions:
         out.append(BOLD + "  Today's Sessions:" + RESET)
         for i, sess in enumerate(sessions, 1):
@@ -156,7 +155,6 @@ def draw(sessions, daily_so_far, live):
 
     out.append("  " + LINE)
 
-    # Live current session
     if status == "connected":
         out.append(BOLD + GREEN + "  >> LIVE  |  Interface: {}".format(iface) + RESET)
         out.append("     Time:     {}".format(format_elapsed(live_el)))
@@ -180,7 +178,6 @@ def draw(sessions, daily_so_far, live):
 
 def main():
     os.system("color")
-    print(CLEAR + "  Loading...", flush=True)
     try:
         while True:
             sessions, daily_so_far = get_todays_sessions()
@@ -188,7 +185,8 @@ def main():
             draw(sessions, daily_so_far, live)
             time.sleep(REFRESH)
     except KeyboardInterrupt:
-        print(CLEAR + "\n  Viewer closed. Background tracker still running.\n")
+        os.system("cls")
+        print("\n  Viewer closed. Background tracker still running.\n")
 
 
 if __name__ == "__main__":
